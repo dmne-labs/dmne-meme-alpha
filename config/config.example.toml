@@ -17,17 +17,17 @@ tp2_trigger_pct = 80.0
 tp2_sell_fraction = 0.35
 runner_trailing_drop_pct = 18.0
 
-stagnation_ttl_secs = 30       # Baseline default — calibrate on out-of-sample data
-positive_stagnation_ttl_secs = 60
-stagnation_scratch_band_pct = 4.0
-stagnation_timeout_sec = 30
+stagnation_ttl_secs = 120       # Baseline default — calibrate on out-of-sample data
+positive_stagnation_ttl_secs = 120
+stagnation_scratch_band_pct = 2.0
+stagnation_timeout_sec = 120
 stagnation_max_peak_pct = 8.0
-stagnation_band_min_pct = -4.0
-stagnation_band_max_pct = 4.0
+stagnation_band_min_pct = -2.0
+stagnation_band_max_pct = 2.0
 reentry_cooldown_secs = 3600
 toxic_exit_permanent_ban = true
 
-min_entry_liquidity_usd = 25000.0  # Baseline default — calibrate on out-of-sample data
+min_entry_liquidity_usd = 95000.0  # Baseline default — calibrate on out-of-sample data
 min_entry_price_change_pct = 1.0
 max_entry_price_change_pct = 80.0
 min_entry_buy_sell_ratio = 1.20
@@ -44,10 +44,10 @@ max_confirm_tick_gain_pct = 25.0
 min_confirm_liquidity_retention_ratio = 0.95
 rejected_candidate_cooldown_secs = 300
 
-kelly_fraction_nav_pct = 5.0
-min_kelly_fraction_nav_pct = 3.0
-base_kelly_fraction_nav_pct = 4.5
-max_kelly_fraction_nav_pct = 8.5
+kelly_fraction_nav_pct = 3.0
+min_kelly_fraction_nav_pct = 2.0
+base_kelly_fraction_nav_pct = 3.0
+max_kelly_fraction_nav_pct = 4.0
 max_active_slots = 4
 dex_roundtrip_fee_pct = 0.60
 jito_tip_lamports = 10000
@@ -60,7 +60,7 @@ min_gas_reserve_sol = 0.030
 [hawkes]
 enabled = true
 min_sample_size = 5
-branching_ratio_threshold = 1.15
+branching_ratio_threshold = 1.35
 decay_rate = 1.0
 
 [dynamic_exits]
@@ -87,18 +87,18 @@ reject_shared_tip_accounts = true
 [funder_graph]
 enabled = true
 max_hops = 3
-max_sybil_cluster_pct = 18.0
+max_sybil_cluster_pct = 25.0
 max_funder_hhi = 0.35
 max_cluster_funding_window_secs = 300
 cex_amount_tolerance_sol = 0.005
 cache_path = "logs/onchain_cache.json"
 
 [gates]
-max_top20_hhi = 0.35
+max_top20_hhi = 0.45
 max_sybil_ratio_rho = 0.25
 max_sniper_supply_share = 0.18
-max_wash_volume_eta = 0.65
-min_protocol_fee_ratio_phi = 0.70
+max_wash_volume_eta = 0.75
+min_protocol_fee_ratio_phi = 0.60
 max_transfer_component_cap = 0.15
 min_liquidity_retention_ratio = 0.50
 min_effective_holder_usd = 25.0

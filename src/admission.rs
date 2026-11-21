@@ -233,9 +233,9 @@ pub fn evaluate_candidate_admission(
         _ => false,
     };
     let min_entry_liquidity = if is_early_social {
-        25000.0f64.min(cfg.risk.min_entry_liquidity_usd)
+        95000.0f64.min(cfg.risk.min_entry_liquidity_usd)
     } else {
-        cfg.risk.min_entry_liquidity_usd.max(32000.0)
+        cfg.risk.min_entry_liquidity_usd.max(95000.0)
     };
     if candidate.liquidity_usd < min_entry_liquidity {
         return Err(RejectionReason::LowLiquidity {
@@ -539,7 +539,7 @@ mod tests {
             pair_address: "PairAddress111111111111111111111111111111111".to_string(),
             dex_id: "pumpfun".to_string(),
             price_sol: 0.00001,
-            liquidity_usd: 40000.0,
+            liquidity_usd: 110000.0,
             fdv_usd: 50000.0,
             m5_price_change_pct: 5.0,
             h1_price_change_pct: 12.0,
@@ -618,7 +618,7 @@ mod tests {
     #[test]
     fn test_admission_low_liquidity_rejection() {
         let mut candidate = make_test_candidate();
-        candidate.liquidity_usd = 15000.0; // Below 32000.0 default
+        candidate.liquidity_usd = 15000.0; // Below 95000.0 default
         let cfg = EngineConfig::default();
         let res = evaluate_candidate_admission(&candidate, &cfg, None);
         assert!(res.is_err());
@@ -627,7 +627,7 @@ mod tests {
         match err {
             RejectionReason::LowLiquidity { current_usd, required_usd } => {
                 assert_eq!(current_usd, 15000.0);
-                assert_eq!(required_usd, 32000.0);
+                assert_eq!(required_usd, 95000.0);
             }
             _ => panic!("Expected LowLiquidity error"),
         }
@@ -644,25 +644,25 @@ mod tests {
         let res_std = evaluate_candidate_admission(&standard_cand, &cfg, None);
         assert!(res_std.is_err());
         match res_std.unwrap_err() {
-            RejectionReason::LowLiquidity { required_usd, .. } => assert_eq!(required_usd, 32000.0),
+            RejectionReason::LowLiquidity { required_usd, .. } => assert_eq!(required_usd, 95000.0),
             _ => panic!("Expected LowLiquidity error"),
         }
 
         // 2. Early social caller signal (delta 20s <= 30s) at $28,000 -> Passed (retains $25k floor)
         let mut early_social = make_test_candidate();
-        early_social.liquidity_usd = 28000.0;
+        early_social.liquidity_usd = 98000.0;
         early_social.caller_delta_seconds = Some(20);
         let res_early = evaluate_candidate_admission(&early_social, &cfg, None);
         assert!(res_early.is_ok(), "Early social candidate at $28k should pass under $25k floor");
 
         // 3. Late social caller signal (delta 45s > 30s) at $28,000 -> Rejected (requires $32k floor)
         let mut late_social = make_test_candidate();
-        late_social.liquidity_usd = 28000.0;
+        late_social.liquidity_usd = 90000.0;
         late_social.caller_delta_seconds = Some(45);
         let res_late = evaluate_candidate_admission(&late_social, &cfg, None);
         assert!(res_late.is_err());
         match res_late.unwrap_err() {
-            RejectionReason::LowLiquidity { required_usd, .. } => assert_eq!(required_usd, 32000.0),
+            RejectionReason::LowLiquidity { required_usd, .. } => assert_eq!(required_usd, 95000.0),
             _ => panic!("Expected LowLiquidity error"),
         }
     }
@@ -1193,8 +1193,8 @@ mod tests {
 
         // 3. Liquidity retention < 50% -> rejected
         let mut c3 = make_test_candidate();
-        c3.liquidity_usd = 40_000.0;
-        c3.peak_liquidity_usd = Some(100_000.0);
+        c3.liquidity_usd = 110_000.0;
+        c3.peak_liquidity_usd = Some(300_000.0);
         assert!(evaluate_candidate_admission(&c3, &cfg, None).is_err());
 
         // 4. Dust-adjusted active holders (< 5 holders >= $25) -> rejected

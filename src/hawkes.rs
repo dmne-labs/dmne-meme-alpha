@@ -98,7 +98,7 @@ fn default_min_cascade_count() -> u32 { 5 }
 fn default_min_epoch_bins() -> usize { 2 }
 fn default_override_min_volume_usd() -> f64 { 25_000.0 }
 fn default_override_min_buy_sell_ratio() -> f64 { 1.75 }
-fn default_override_min_liquidity_usd() -> f64 { 25_000.0 }
+fn default_override_min_liquidity_usd() -> f64 { 95_000.0 }
 
 impl Default for HawkesConfig {
     fn default() -> Self {

@@ -434,7 +434,7 @@ fn default_min_stagnation_ttl_secs() -> u64 { 120 }
 fn default_max_stagnation_ttl_secs() -> u64 { 360 }
 fn default_reentry_cooldown_secs() -> u64 { 3600 }
 fn default_toxic_exit_permanent_ban() -> bool { true }
-fn default_min_entry_liquidity_usd() -> f64 { 32000.0 }
+fn default_min_entry_liquidity_usd() -> f64 { 95000.0 }
 fn default_min_entry_price_change_pct() -> f64 { 1.5 }
 fn default_max_entry_price_change_pct() -> f64 { 85.0 }
 fn default_min_entry_buy_sell_ratio() -> f64 { 1.25 }
@@ -453,9 +453,9 @@ fn default_max_confirm_tick_gain_pct() -> f64 { 25.0 }
 fn default_min_confirm_liquidity_retention_ratio() -> f64 { 0.98 }
 fn default_rejected_candidate_cooldown_secs() -> u64 { 300 }
 fn default_kelly_fraction_nav_pct() -> f64 { 7.5 }
-fn default_min_kelly_fraction_nav_pct() -> f64 { 4.5 }
+fn default_min_kelly_fraction_nav_pct() -> f64 { 3.0 }
 fn default_base_kelly_fraction_nav_pct() -> f64 { 6.5 }
-fn default_max_kelly_fraction_nav_pct() -> f64 { 8.5 }
+fn default_max_kelly_fraction_nav_pct() -> f64 { 4.0 }
 fn default_high_conviction_buy_ratio_threshold() -> f64 { 2.0 }
 fn default_max_active_slots() -> usize { 4 }
 fn default_dex_roundtrip_fee_pct() -> f64 { 0.60 }
@@ -469,12 +469,12 @@ fn default_min_entry_sol() -> f64 { 0.010 }
 fn default_max_entry_sol() -> f64 { 0.060 }
 fn default_stop_loss_pct() -> f64 { -20.0 }
 fn default_stagnation_ttl_secs() -> u64 { 160 }
-fn default_positive_stagnation_ttl_secs() -> u64 { 60 }
-fn default_stagnation_scratch_band_pct() -> f64 { 4.0 }
+fn default_positive_stagnation_ttl_secs() -> u64 { 120 }
+fn default_stagnation_scratch_band_pct() -> f64 { 2.0 }
 fn default_min_gas_reserve_sol() -> f64 { 0.030 }
 fn default_base_position_size_sol() -> f64 { 0.045 }
 fn default_base_position_pct_nav() -> f64 { 0.045 }
-fn default_max_position_pct_nav() -> f64 { 0.085 }
+fn default_max_position_pct_nav() -> f64 { 0.04 }
 fn default_min_take_profit_activation_pct() -> f64 { 10.0 }
 
 impl Default for RiskConfig {
@@ -496,8 +496,8 @@ impl Default for RiskConfig {
             min_runner_trailing_drop_pct: 12.0,
             max_runner_trailing_drop_pct: 25.0,
             stagnation_ttl_secs: 160,
-            positive_stagnation_ttl_secs: 60,
-            stagnation_scratch_band_pct: 4.0,
+            positive_stagnation_ttl_secs: 120,
+            stagnation_scratch_band_pct: 2.0,
             stagnation_timeout_sec: None,
             cruise_baseline_ttl_secs: 240,
             min_stagnation_ttl_secs: 120,
@@ -508,7 +508,7 @@ impl Default for RiskConfig {
             min_take_profit_activation_pct: 10.0,
             reentry_cooldown_secs: 3600,
             toxic_exit_permanent_ban: true,
-            min_entry_liquidity_usd: 32000.0,
+            min_entry_liquidity_usd: 95000.0,
             min_entry_price_change_pct: 1.5,
             max_entry_price_change_pct: 85.0,
             min_entry_buy_sell_ratio: 1.25,
@@ -527,9 +527,9 @@ impl Default for RiskConfig {
             min_confirm_liquidity_retention_ratio: 0.98,
             rejected_candidate_cooldown_secs: 300,
             kelly_fraction_nav_pct: 7.5,
-            min_kelly_fraction_nav_pct: 4.5,
+            min_kelly_fraction_nav_pct: 3.0,
             base_kelly_fraction_nav_pct: 6.5,
-            max_kelly_fraction_nav_pct: 8.5,
+            max_kelly_fraction_nav_pct: 4.0,
             high_conviction_buy_ratio_threshold: 2.0,
             max_active_slots: 4,
             dex_roundtrip_fee_pct: 0.60,
@@ -736,7 +736,7 @@ impl Default for EngineConfig {
             min_dead_lp_ratio: 0.950,             // 95% burned or locked LP tokens for AMM pools
             wallet_keypair_path: "wallet.example.json".to_string(),
             min_gas_reserve_sol: 0.0300,       // Never withdraw or trade below this reserve
-            min_liquidity_usd: 25000.0,
+            min_liquidity_usd: 95000.0,
             max_dev_holding_pct: 1.0,         // Reject if deployer holds >= 1.0%
             max_top10_concentration_pct: 18.0,
             min_symbol_entropy: 1.8,          // Reject repetitive ticker spam
@@ -892,9 +892,9 @@ mod tests {
     fn test_risk_config_defaults() {
         let cfg = RiskConfig::default();
         assert_eq!(cfg.emergency_jito_tip_lamports, 75_000);
-        assert_eq!(cfg.min_kelly_fraction_nav_pct, 4.5);
+        assert_eq!(cfg.min_kelly_fraction_nav_pct, 3.0);
         assert_eq!(cfg.base_kelly_fraction_nav_pct, 6.5);
-        assert_eq!(cfg.max_kelly_fraction_nav_pct, 8.5);
+        assert_eq!(cfg.max_kelly_fraction_nav_pct, 4.0);
         assert_eq!(cfg.high_conviction_buy_ratio_threshold, 2.0);
         assert_eq!(cfg.jito_tip_lamports, 10_000);
         assert_eq!(cfg.min_entry_sol, 0.010);
@@ -902,7 +902,7 @@ mod tests {
         assert_eq!(cfg.min_gas_reserve_sol, 0.030);
         assert_eq!(cfg.base_position_size_sol, 0.045);
         assert_eq!(cfg.base_position_pct_nav, 0.045);
-        assert_eq!(cfg.max_position_pct_nav, 0.085);
+        assert_eq!(cfg.max_position_pct_nav, 0.04);
     }
 
     #[test]
@@ -923,16 +923,16 @@ mod tests {
         "#;
         let cfg: RiskConfig = toml::from_str(toml_str).expect("Failed to deserialize minimal toml");
         assert_eq!(cfg.emergency_jito_tip_lamports, 75_000);
-        assert_eq!(cfg.min_kelly_fraction_nav_pct, 4.5);
+        assert_eq!(cfg.min_kelly_fraction_nav_pct, 3.0);
         assert_eq!(cfg.base_kelly_fraction_nav_pct, 6.5);
-        assert_eq!(cfg.max_kelly_fraction_nav_pct, 8.5);
+        assert_eq!(cfg.max_kelly_fraction_nav_pct, 4.0);
         assert_eq!(cfg.high_conviction_buy_ratio_threshold, 2.0);
         assert_eq!(cfg.min_entry_sol, 0.010);
         assert_eq!(cfg.max_entry_sol, 0.060);
         assert_eq!(cfg.min_gas_reserve_sol, 0.030);
         assert_eq!(cfg.base_position_size_sol, 0.045);
         assert_eq!(cfg.base_position_pct_nav, 0.045);
-        assert_eq!(cfg.max_position_pct_nav, 0.085);
+        assert_eq!(cfg.max_position_pct_nav, 0.04);
     }
 
     #[test]
@@ -1021,10 +1021,10 @@ mod tests {
         assert_eq!(engine_cfg.risk.stop_loss_pct, -10.0);
         assert_eq!(engine_cfg.hard_stop_loss_pct, -10.0);
         assert_eq!(engine_cfg.risk.min_take_profit_activation_pct, 10.0);
-        assert_eq!(engine_cfg.risk.stagnation_ttl_secs, 30);
-        assert_eq!(engine_cfg.stagnation_ttl_seconds, 30);
-        assert_eq!(engine_cfg.risk.stagnation_band_min_pct, -4.0);
-        assert_eq!(engine_cfg.risk.stagnation_band_max_pct, 4.0);
+        assert_eq!(engine_cfg.risk.stagnation_ttl_secs, 120);
+        assert_eq!(engine_cfg.stagnation_ttl_seconds, 120);
+        assert_eq!(engine_cfg.risk.stagnation_band_min_pct, -2.0);
+        assert_eq!(engine_cfg.risk.stagnation_band_max_pct, 2.0);
         assert_eq!(engine_cfg.risk.emergency_stop_base_tip_lamports, 50_000);
         assert_eq!(engine_cfg.risk.emergency_stop_max_tip_lamports, 150_000);
         assert_eq!(engine_cfg.risk.atomic_drain_threshold_pct_per_sec, -0.50);
