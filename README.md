@@ -10,6 +10,10 @@ Deterministic Solana on-chain microstructure gating, Hawkes point-process wash-t
 - **DMNE Institutional:** https://dmne-institutional.com
 - **Commercial & Enterprise Licensing:** `licensing@dmnelabs.com`
 
+## Open-Core Scope & Calibration
+
+This public release provides the deterministic Rust execution engine, fail-closed microstructure guards, and forensic telemetry pipeline configured with conservative baseline thresholds. Proprietary parameter calibrations, empirical tick-level datasets, and private signal ingestion pipelines remain exclusive to DMNE Labs' production deployments and licensed partner environments.
+
 ## Quick Start
 
 1. Copy the example configuration and environment templates:
