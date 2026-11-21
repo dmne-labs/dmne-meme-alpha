@@ -1,0 +1,128 @@
+# DMNE Meme Open-Core Configuration Example
+# Baseline default — calibrate on out-of-sample data
+
+[risk]
+stop_loss_pct = -10.0          # Baseline default — calibrate on out-of-sample data
+max_stop_loss_pct = 10.0       # Baseline default — calibrate on out-of-sample data
+max_slippage_loss_pct = -25.0
+flash_dump_tick_pct = -15.0
+flash_dump_max_pnl_pct = 0.0
+
+breakeven_arm_pct = 20.0       # Baseline default — calibrate on out-of-sample data
+breakeven_floor_pct = 5.0      # Baseline default — calibrate on out-of-sample data
+min_take_profit_activation_pct = 10.0
+tp1_trigger_pct = 40.0
+tp1_sell_fraction = 0.40
+tp2_trigger_pct = 80.0
+tp2_sell_fraction = 0.35
+runner_trailing_drop_pct = 18.0
+
+stagnation_ttl_secs = 30       # Baseline default — calibrate on out-of-sample data
+positive_stagnation_ttl_secs = 60
+stagnation_scratch_band_pct = 4.0
+stagnation_timeout_sec = 30
+stagnation_max_peak_pct = 8.0
+stagnation_band_min_pct = -4.0
+stagnation_band_max_pct = 4.0
+reentry_cooldown_secs = 3600
+toxic_exit_permanent_ban = true
+
+min_entry_liquidity_usd = 25000.0  # Baseline default — calibrate on out-of-sample data
+min_entry_price_change_pct = 1.0
+max_entry_price_change_pct = 80.0
+min_entry_buy_sell_ratio = 1.20
+min_entry_conviction_pct = 50.0
+min_entry_m5_txns = 15
+min_entry_m5_volume_usd = 2500.0
+min_entry_h1_price_change_pct = -10.0
+max_entry_fdv_to_liquidity_ratio = 15.0
+
+entry_confirm_ticks = 2
+entry_confirm_interval_secs = 6
+min_confirm_tick_gain_pct = 0.0
+max_confirm_tick_gain_pct = 25.0
+min_confirm_liquidity_retention_ratio = 0.95
+rejected_candidate_cooldown_secs = 300
+
+kelly_fraction_nav_pct = 5.0
+min_kelly_fraction_nav_pct = 3.0
+base_kelly_fraction_nav_pct = 4.5
+max_kelly_fraction_nav_pct = 8.5
+max_active_slots = 4
+dex_roundtrip_fee_pct = 0.60
+jito_tip_lamports = 10000
+emergency_stop_base_tip_lamports = 50000
+emergency_stop_max_tip_lamports = 150000
+min_entry_sol = 0.010
+max_entry_sol = 0.050
+min_gas_reserve_sol = 0.030
+
+[hawkes]
+enabled = true
+min_sample_size = 5
+branching_ratio_threshold = 1.15
+decay_rate = 1.0
+
+[dynamic_exits]
+enabled = true
+vol_multiplier = 1.50
+min_trail_pct = 8.0
+max_trail_pct = 22.0
+mfe_activation_pct = 15.0
+min_locked_floor_pct = 4.0
+
+[orderflow]
+enabled = true
+cvd_window_secs = 60.0
+min_entry_cvd_ratio = 0.15
+bearish_absorption_threshold = -0.30
+tighten_exit_on_absorption = true
+
+[genesis_guard]
+enabled = true
+max_genesis_supply_pct = 25.0
+max_slot0_bundled_txs = 3
+reject_shared_tip_accounts = true
+
+[funder_graph]
+enabled = true
+max_hops = 3
+max_sybil_cluster_pct = 18.0
+max_funder_hhi = 0.35
+max_cluster_funding_window_secs = 300
+cex_amount_tolerance_sol = 0.005
+cache_path = "logs/onchain_cache.json"
+
+[gates]
+max_top20_hhi = 0.35
+max_sybil_ratio_rho = 0.25
+max_sniper_supply_share = 0.18
+max_wash_volume_eta = 0.65
+min_protocol_fee_ratio_phi = 0.70
+max_transfer_component_cap = 0.15
+min_liquidity_retention_ratio = 0.50
+min_effective_holder_usd = 25.0
+min_effective_holders_count = 5
+max_jito_packet_bytes = 1232
+social_rep_decay_tau_days = 14.0
+deployer_blacklist_path = "logs/deployer_blacklist.json"
+canonical_quote_mints = [
+  "So11111111111111111111111111111111111111112",
+  "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+  "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB"
+]
+dex_pool_authorities = [
+  "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
+  "GpMZbSM2GgvTKHJirzeGfMFoaZ8UR2X7F4v8vHTvxFbL",
+  "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+  "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc",
+  "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo"
+]
+alt_addresses = []
+
+[admin]
+admin_passphrase = "change-me-admin-passphrase"
+
+[solana]
+rpc_url = "https://api.mainnet-beta.solana.com"
+public_rpc_url = "https://api.mainnet-beta.solana.com"

@@ -1,0 +1,938 @@
+#![allow(dead_code)]
+// DMNE MEME // POSTGRESQL PERSISTENCE MODULE
+// Asynchronous Database Client, Pre-Trade Audits & Trade Settlement Logs
+
+use tokio_postgres::{Client, NoTls, Error};
+use serde_json::{Value, json, Map};
+use crate::cold_path::{CounterfactualResult, RootCauseCategory, TradeAutopsyReport};
+
+pub const DEFAULT_DB_URL: &str = "host=localhost user=postgres dbname=dmne_meme";
+
+/// Establishes an asynchronous PostgreSQL connection
+pub async fn establish_connection(db_url: &str) -> Result<Client, Error> {
+    let (client, connection) = tokio_postgres::connect(db_url, NoTls).await?;
+    tokio::spawn(async move {
+        if let Err(e) = connection.await {
+            eprintln!("[POSTGRES ERROR] Connection lost: {}", e);
+        }
+    });
+    Ok(client)
+}
+
+/// Logs a pre-trade audit decision into PostgreSQL
+pub async fn record_pre_trade_audit(
+    client: &Client,
+    mint: &str,
+    pool_address: &str,
+    dex_id: &str,
+    liquidity_usd: f64,
+    hhi: f64,
+    freeze_null: bool,
+    mint_null: bool,
+    lp_verified: bool,
+    admitted: bool,
+    reason: &str,
+) -> Result<(), Error> {
+    let stmt = "
+        INSERT INTO pre_trade_audits (
+            token_mint, pool_address, dex_id, liquidity_usd, hhi_concentration,
+            freeze_authority_null, mint_authority_null, lp_burn_verified, admitted, rejection_reason
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    ";
+    client.execute(
+        stmt,
+        &[&mint, &pool_address, &dex_id, &liquidity_usd, &hhi, &freeze_null, &mint_null, &lp_verified, &admitted, &reason]
+    ).await?;
+    Ok(())
+}
+
+/// Logs a closed position settlement into PostgreSQL
+pub async fn record_settled_trade(
+    client: &Client,
+    mint: &str,
+    symbol: &str,
+    hold_duration_sec: i32,
+    entry_size_sol: f64,
+    entry_price_sol: f64,
+    exit_price_sol: f64,
+    peak_price_sol: f64,
+    pnl_pct: f64,
+    realized_pnl_sol: f64,
+    bankroll_before: f64,
+    bankroll_after: f64,
+    exit_rule: &str,
+    dex_url: &str,
+    is_toxic: bool,
+) {
+    let stmt = "
+        INSERT INTO settled_trades (
+            token_mint, symbol, hold_duration_seconds, entry_size_sol, entry_price_sol,
+            exit_price_sol, peak_price_sol, pnl_pct, realized_pnl_sol, bankroll_before_sol,
+            bankroll_after_sol, exit_rule, dex_url, is_toxic
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+    ";
+    let _ = client.execute(
+        stmt,
+        &[
+            &mint, &symbol, &hold_duration_sec, &entry_size_sol, &entry_price_sol,
+            &exit_price_sol, &peak_price_sol, &pnl_pct, &realized_pnl_sol, &bankroll_before,
+            &bankroll_after, &exit_rule, &dex_url, &is_toxic
+        ]
+    ).await;
+}
+
+/// Queries recent closed trades for the forensic ledger
+pub async fn fetch_settled_trades(client: &Client, limit: i64) -> Vec<Value> {
+    let stmt = "
+        SELECT 
+            token_mint, symbol, to_char(exit_timestamp, 'YYYY-MM-DD HH24:MI:SS') as exit_time,
+            hold_duration_seconds, entry_size_sol, entry_price_sol, exit_price_sol,
+            pnl_pct, realized_pnl_sol, exit_rule, dex_url
+        FROM settled_trades
+        ORDER BY exit_timestamp DESC
+        LIMIT $1
+    ";
+    let mut trades = Vec::new();
+    if let Ok(rows) = client.query(stmt, &[&limit]).await {
+        for row in rows {
+            let mut obj = Map::new();
+            obj.insert("token_mint".to_string(), json!(row.get::<_, String>("token_mint")));
+            obj.insert("symbol".to_string(), json!(row.get::<_, String>("symbol")));
+            obj.insert("timestamp".to_string(), json!(row.get::<_, Option<String>>("exit_time").unwrap_or_default()));
+            obj.insert("hold_seconds".to_string(), json!(row.get::<_, i32>("hold_duration_seconds")));
+            obj.insert("size_sol".to_string(), json!(row.get::<_, f64>("entry_size_sol")));
+            obj.insert("entry_price_sol".to_string(), json!(format!("{:.4e}", row.get::<_, f64>("entry_price_sol"))));
+            obj.insert("exit_price_sol".to_string(), json!(format!("{:.4e}", row.get::<_, f64>("exit_price_sol"))));
+            obj.insert("realized_pnl_pct".to_string(), json!(row.get::<_, f64>("pnl_pct")));
+            obj.insert("realized_pnl_sol".to_string(), json!(row.get::<_, f64>("realized_pnl_sol")));
+            obj.insert("exit_rule".to_string(), json!(row.get::<_, String>("exit_rule")));
+            obj.insert("dex_url".to_string(), json!(row.get::<_, Option<String>>("dex_url").unwrap_or_default()));
+            trades.push(Value::Object(obj));
+        }
+    }
+    trades
+}
+
+/// Fetches all historical closed trades for quarantine state reconciliation on startup
+pub async fn fetch_settled_trades_for_reconcile(client: &Client) -> Vec<(String, String, f64, f64, f64, String, u64, bool)> {
+    let stmt = "
+        SELECT token_mint, symbol, entry_size_sol, realized_pnl_sol, pnl_pct, exit_rule,
+               EXTRACT(EPOCH FROM exit_timestamp)::bigint AS exit_epoch,
+               COALESCE(is_toxic, false) AS is_toxic
+        FROM settled_trades
+        ORDER BY exit_timestamp ASC
+    ";
+    let mut out = Vec::new();
+    if let Ok(rows) = client.query(stmt, &[]).await {
+        for row in rows {
+            let mint: String = row.get("token_mint");
+            let symbol: String = row.get("symbol");
+            let size: f64 = row.get("entry_size_sol");
+            let pnl_sol: f64 = row.get("realized_pnl_sol");
+            let pnl_pct: f64 = row.get("pnl_pct");
+            let rule: String = row.get("exit_rule");
+            let epoch: i64 = row.get("exit_epoch");
+            let is_toxic: bool = row.get("is_toxic");
+            out.push((mint, symbol, size, pnl_sol, pnl_pct, rule, epoch.max(0) as u64, is_toxic));
+        }
+    }
+    out
+}
+
+/// Queries all active users from PostgreSQL
+pub async fn fetch_active_users(client: &Client) -> Vec<Value> {
+    let stmt = "
+        SELECT id, display_name, role, execution_mode, pubkey, paper_bankroll_sol, has_started
+        FROM users
+        WHERE is_active = true
+        ORDER BY created_at ASC;
+    ";
+    let mut users = Vec::new();
+    if let Ok(rows) = client.query(stmt, &[]).await {
+        for r in rows {
+            let id: String = r.get(0);
+            let name: String = r.get(1);
+            let role: String = r.get(2);
+            let mode: String = r.get(3);
+            let pubkey: String = r.get(4);
+            let paper_bankroll: f64 = r.get(5);
+            let has_started: bool = r.get::<_, Option<bool>>(6).unwrap_or(false);
+            users.push(json!({
+                "id": id,
+                "name": name,
+                "role": role,
+                "mode": mode,
+                "pubkey": pubkey,
+                "paper_bankroll": paper_bankroll,
+                "has_started": has_started
+            }));
+        }
+    }
+    users
+}
+
+/// Verifies user credentials against PostgreSQL and returns (role, session_token) on success
+pub async fn verify_login(client: &Client, user_id: &str, password_hash: &str) -> Option<(String, String)> {
+    let stmt = "
+        SELECT role, is_active
+        FROM users
+        WHERE id = $1 AND password_hash = $2
+    ";
+    if let Ok(rows) = client.query(stmt, &[&user_id, &password_hash]).await {
+        if let Some(row) = rows.first() {
+            let role: String = row.get(0);
+            let is_active: bool = row.get(1);
+            if is_active {
+                let token = format!("tok_{}_{}", user_id, chrono::Utc::now().timestamp());
+                let update_stmt = "UPDATE users SET session_token = $1 WHERE id = $2";
+                let _ = client.execute(update_stmt, &[&token, &user_id]).await;
+                return Some((role, token));
+            }
+        }
+    }
+    None
+}
+
+/// Marks a user's desk as started/activated
+pub async fn set_user_started(client: &Client, user_id: &str) -> bool {
+    let stmt = "UPDATE users SET has_started = true WHERE id = $1";
+    if let Ok(rows_affected) = client.execute(stmt, &[&user_id]).await {
+        return rows_affected > 0;
+    }
+    false
+}
+
+/// Toggles user execution mode between PAPER and LIVE
+pub async fn toggle_user_mode(client: &Client, user_id: &str) -> Option<String> {
+    let stmt = "
+        UPDATE users
+        SET execution_mode = CASE WHEN execution_mode = 'LIVE' THEN 'PAPER' ELSE 'LIVE' END
+        WHERE id = $1
+        RETURNING execution_mode;
+    ";
+    if let Ok(rows) = client.query(stmt, &[&user_id]).await {
+        if let Some(r) = rows.first() {
+            let mode: String = r.get(0);
+            return Some(mode);
+        }
+    }
+    None
+}
+
+/// Fetches the latest dynamic parameter override published by an AI Agent within max_age_secs
+pub async fn fetch_latest_override(client: &Client, agent_id: &str, max_age_secs: i64) -> Option<(f64, f64, i32)> {
+    let stmt = "
+        SELECT hhi_ceiling, volatility_trail_multiplier, stagnation_ttl_seconds
+        FROM agent_parameter_overrides
+        WHERE agent_id = $1 AND applied_to_engine = true
+          AND timestamp >= NOW() - ($2 * interval '1 second')
+        ORDER BY timestamp DESC
+        LIMIT 1
+    ";
+    if let Ok(rows) = client.query(stmt, &[&agent_id, &max_age_secs]).await {
+        if let Some(row) = rows.first() {
+            let hhi: f64 = row.get::<_, Option<f64>>(0).unwrap_or(0.280);
+            let trail: f64 = row.get::<_, Option<f64>>(1).unwrap_or(2.20);
+            let ttl: i32 = row.get::<_, Option<i32>>(2).unwrap_or(240);
+            return Some((hhi, trail, ttl));
+        }
+    }
+    None
+}
+
+
+/// Queries cumulative forensic statistics directly from PostgreSQL
+pub async fn fetch_aggregate_stats(client: &Client) -> (i64, i64, f64) {
+    let stmt = "
+        SELECT 
+            COUNT(*)::bigint AS total_trades,
+            COUNT(*) FILTER (WHERE realized_pnl_sol > 0.0)::bigint AS wins,
+            COALESCE(SUM(realized_pnl_sol), 0.0) AS net_realized
+        FROM settled_trades
+    ";
+    if let Ok(rows) = client.query(stmt, &[]).await {
+        if let Some(row) = rows.first() {
+            let total: i64 = row.get::<_, i64>(0);
+            let wins: i64 = row.get::<_, i64>(1);
+            let net: f64 = row.get::<_, f64>(2);
+            return (total, wins, net);
+        }
+    }
+    (0, 0, 0.0)
+}
+
+
+/// Queries cumulative statistics and rejection counts from PostgreSQL
+pub async fn fetch_complete_system_stats(client: &Client) -> (i64, i64, f64, i64) {
+    let stats_stmt = "
+        SELECT 
+            COUNT(*)::bigint AS total_trades,
+            COUNT(*) FILTER (WHERE realized_pnl_sol > 0.0)::bigint AS wins,
+            COALESCE(SUM(realized_pnl_sol), 0.0) AS net_realized
+        FROM settled_trades
+    ";
+    let rejections_stmt = "
+        SELECT COUNT(*)::bigint FROM pre_trade_audits WHERE admitted = false
+    ";
+    
+    let mut total = 0i64;
+    let mut wins = 0i64;
+    let mut net = 0.0f64;
+    let mut rejections = 0i64;
+
+    if let Ok(rows) = client.query(stats_stmt, &[]).await {
+        if let Some(row) = rows.first() {
+            total = row.get(0);
+            wins = row.get(1);
+            net = row.get(2);
+        }
+    }
+
+    if let Ok(rows) = client.query(rejections_stmt, &[]).await {
+        if let Some(row) = rows.first() {
+            rejections = row.get(0);
+        }
+    }
+
+    (total, wins, net, rejections)
+}
+
+/// Queries both settled_trades and settled_trades_v070_archive for distinct (token_mint, symbol)
+/// where is_toxic = true or pnl_pct < min_non_toxic_pnl_pct
+pub async fn fetch_archived_toxic_tokens(client: &Client, min_non_toxic_pnl_pct: f64) -> Vec<(String, String)> {
+    let mut tokens = Vec::new();
+    let query = "
+        SELECT DISTINCT token_mint, symbol FROM (
+            SELECT token_mint, symbol, is_toxic, pnl_pct FROM settled_trades
+            UNION ALL
+            SELECT token_mint, symbol, is_toxic, pnl_pct FROM settled_trades_v070_archive
+        ) sub
+        WHERE (is_toxic = true OR pnl_pct < $1)
+          AND (token_mint != '' OR symbol != '')
+    ";
+    if let Ok(rows) = client.query(query, &[&min_non_toxic_pnl_pct]).await {
+        for row in rows {
+            let mint: String = row.get(0);
+            let sym: String = row.get(1);
+            tokens.push((mint, sym));
+        }
+    } else {
+        let fallback = "
+            SELECT DISTINCT token_mint, symbol FROM settled_trades
+            WHERE (is_toxic = true OR pnl_pct < $1)
+              AND (token_mint != '' OR symbol != '')
+        ";
+        if let Ok(rows) = client.query(fallback, &[&min_non_toxic_pnl_pct]).await {
+            for row in rows {
+                let mint: String = row.get(0);
+                let sym: String = row.get(1);
+                tokens.push((mint, sym));
+            }
+        }
+    }
+    tokens
+}
+
+/// Queries both settled_trades and settled_trades_v070_archive for all distinct (token_mint, symbol)
+/// enforcing a strict lifetime one-shot mint policy across sessions
+pub async fn fetch_all_settled_tokens(client: &Client) -> Vec<(String, String)> {
+    let mut tokens = Vec::new();
+    let query = "
+        SELECT DISTINCT token_mint, symbol FROM (
+            SELECT token_mint, symbol FROM settled_trades
+            UNION ALL
+            SELECT token_mint, symbol FROM settled_trades_v070_archive
+        ) sub
+        WHERE (token_mint != '' OR symbol != '')
+    ";
+    if let Ok(rows) = client.query(query, &[]).await {
+        for row in rows {
+            let mint: String = row.get(0);
+            let sym: String = row.get(1);
+            tokens.push((mint, sym));
+        }
+    } else {
+        let fallback = "
+            SELECT DISTINCT token_mint, symbol FROM settled_trades
+            WHERE (token_mint != '' OR symbol != '')
+        ";
+        if let Ok(rows) = client.query(fallback, &[]).await {
+            for row in rows {
+                let mint: String = row.get(0);
+                let sym: String = row.get(1);
+                tokens.push((mint, sym));
+            }
+        }
+    }
+    tokens
+}
+
+/// Fetches recent pre-trade audits to populate candidate radar on boot
+pub async fn fetch_recent_radar_audits(client: &Client, limit: i64) -> Vec<serde_json::Value> {
+    let stmt = "
+        SELECT token_mint, dex_id, liquidity_usd, admitted
+        FROM pre_trade_audits
+        ORDER BY timestamp DESC
+        LIMIT $1
+    ";
+    let mut audits = Vec::new();
+    if let Ok(rows) = client.query(stmt, &[&limit]).await {
+        for row in rows {
+            let mint: String = row.get(0);
+            let dex: String = row.get(1);
+            let liq: f64 = row.get(2);
+            let admitted: bool = row.get(3);
+            let sym = if mint.len() > 6 { mint[..5].to_uppercase() } else { "MINT".to_string() };
+            audits.push(serde_json::json!({
+                "symbol": sym,
+                "token_mint": mint,
+                "dex_id": dex,
+                "liquidity_usd": liq,
+                "bonding_curve_pct": if mint.ends_with("pump") { 68 } else { 100 },
+                "dev_holding_pct": 0.0,
+                "mint_authority_revoked": true,
+                "freeze_authority_revoked": true,
+                "cu_consumed": 55774,
+                "admitted": admitted
+            }));
+        }
+    }
+    audits
+}
+
+
+use tokio::sync::mpsc;
+
+#[derive(Debug, Clone)]
+pub struct AuditLogPayload {
+    pub token_mint: String,
+    pub pair_address: String,
+    pub dex_id: String,
+    pub liquidity_usd: f64,
+    pub hhi_concentration: f64,
+    pub mint_revoked: bool,
+    pub freeze_revoked: bool,
+    pub lp_burned: bool,
+    pub admitted: bool,
+    pub rejection_reason: String,
+}
+
+/// Spawns an asynchronous dedicated database worker with auto-reconnecting persistent connection
+pub fn spawn_db_audit_worker(db_url: &'static str) -> mpsc::UnboundedSender<AuditLogPayload> {
+    let (tx, mut rx) = mpsc::unbounded_channel::<AuditLogPayload>();
+
+    tokio::spawn(async move {
+        let mut pending_audit: Option<AuditLogPayload> = None;
+
+        loop {
+            match establish_connection(db_url).await {
+                Ok(client) => {
+                    println!("[DB WORKER] Persistent audit connection established.");
+                    loop {
+                        let audit = match pending_audit.take() {
+                            Some(pending) => pending,
+                            None => match rx.recv().await {
+                                Some(next) => next,
+                                None => return,
+                            },
+                        };
+
+                        if client.is_closed() {
+                            eprintln!("[DB AUDIT WORKER] Connection lost (client closed), reconnecting...");
+                            pending_audit = Some(audit);
+                            break;
+                        }
+
+                        if let Err(e) = record_pre_trade_audit(
+                            &client,
+                            &audit.token_mint,
+                            &audit.pair_address,
+                            &audit.dex_id,
+                            audit.liquidity_usd,
+                            audit.hhi_concentration,
+                            audit.mint_revoked,
+                            audit.freeze_revoked,
+                            audit.lp_burned,
+                            audit.admitted,
+                            &audit.rejection_reason,
+                        ).await {
+                            eprintln!("[DB AUDIT WORKER] Connection lost ({}), reconnecting...", e);
+                            pending_audit = Some(audit);
+                            break;
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("[DB WORKER] Connection failed: {}. Retrying in 3s...", e);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                }
+            }
+        }
+    });
+
+    tx
+}
+
+/// Queries the most recent Stage 2 audits from PostgreSQL for fast startup hydration
+pub async fn fetch_recent_stage2_audits(
+    client: &Client,
+    limit: i64,
+) -> Vec<(String, String, f64, f64, bool, String)> {
+    let stmt = "
+        SELECT to_char(timestamp, 'HH24:MI:SS') as time_str,
+               token_mint, liquidity_usd, hhi_concentration, admitted,
+               COALESCE(rejection_reason, 'Admitted') as rejection_reason
+        FROM pre_trade_audits
+        ORDER BY timestamp DESC
+        LIMIT $1
+    ";
+    let mut out = Vec::new();
+    if let Ok(rows) = client.query(stmt, &[&limit]).await {
+        for r in rows {
+            let time: String = r.get("time_str");
+            let mint: String = r.get("token_mint");
+            let liq: f64 = r.get("liquidity_usd");
+            let hhi: f64 = r.get("hhi_concentration");
+            let admitted: bool = r.get("admitted");
+            let reason: String = r.get("rejection_reason");
+            out.push((time, mint, liq, hhi, admitted, reason));
+        }
+    }
+    out
+}
+
+/// Queries the most recent pre-trade rejection reasons from PostgreSQL for rolling window hydration
+pub async fn fetch_recent_rejection_reasons(
+    client: &Client,
+    limit: i64,
+) -> Vec<(bool, String)> {
+    let stmt = "
+        SELECT admitted, COALESCE(rejection_reason, 'Admitted') as rejection_reason
+        FROM pre_trade_audits
+        ORDER BY timestamp DESC
+        LIMIT $1
+    ";
+    let mut out = Vec::new();
+    if let Ok(rows) = client.query(stmt, &[&limit]).await {
+        for r in rows {
+            let admitted: bool = r.get("admitted");
+            let reason: String = r.get("rejection_reason");
+            out.push((admitted, reason));
+        }
+    }
+    out
+}
+
+/// Ensures the cold-path trade_forensic_autopsies table exists
+pub async fn init_autopsy_tables(client: &Client) -> Result<(), Error> {
+    let stmt = "
+        CREATE TABLE IF NOT EXISTS trade_forensic_autopsies (
+            id SERIAL PRIMARY KEY,
+            trade_id INT NOT NULL,
+            symbol VARCHAR(32) NOT NULL,
+            mint VARCHAR(64) NOT NULL,
+            realized_pnl_pct DOUBLE PRECISION NOT NULL,
+            realized_pnl_sol DOUBLE PRECISION NOT NULL,
+            exit_rule VARCHAR(128) NOT NULL,
+            hold_duration_secs DOUBLE PRECISION NOT NULL,
+            peak_mfe_pct DOUBLE PRECISION NOT NULL,
+            max_mae_pct DOUBLE PRECISION NOT NULL,
+            slippage_drift_pct DOUBLE PRECISION NOT NULL,
+            entry_cvd_ratio DOUBLE PRECISION,
+            entry_hawkes_eta DOUBLE PRECISION,
+            root_cause_category VARCHAR(64) NOT NULL,
+            counterfactual_recommendation JSONB NOT NULL,
+            audited_at TIMESTAMPTZ DEFAULT NOW(),
+            CONSTRAINT unique_audited_trade UNIQUE(trade_id)
+        );
+    ";
+    client.execute(stmt, &[]).await?;
+    Ok(())
+}
+
+/// Inserts a post-trade forensic autopsy record into PostgreSQL
+pub async fn insert_trade_autopsy(
+    client: &Client,
+    trade_id: i32,
+    symbol: &str,
+    mint: &str,
+    realized_pnl_pct: f64,
+    realized_pnl_sol: f64,
+    exit_rule: &str,
+    hold_duration_secs: f64,
+    peak_mfe_pct: f64,
+    max_mae_pct: f64,
+    slippage_drift_pct: f64,
+    entry_cvd_ratio: Option<f64>,
+    entry_hawkes_eta: Option<f64>,
+    root_cause_category: &str,
+    counterfactual_recommendation: &str,
+) -> Result<u64, Error> {
+    let stmt = "
+        INSERT INTO trade_forensic_autopsies (
+            trade_id, symbol, mint, realized_pnl_pct, realized_pnl_sol, exit_rule,
+            hold_duration_secs, peak_mfe_pct, max_mae_pct, slippage_drift_pct,
+            entry_cvd_ratio, entry_hawkes_eta, root_cause_category, counterfactual_recommendation
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::text::jsonb)
+        ON CONFLICT (trade_id) DO UPDATE SET
+            realized_pnl_pct = EXCLUDED.realized_pnl_pct,
+            realized_pnl_sol = EXCLUDED.realized_pnl_sol,
+            slippage_drift_pct = EXCLUDED.slippage_drift_pct,
+            root_cause_category = EXCLUDED.root_cause_category,
+            counterfactual_recommendation = EXCLUDED.counterfactual_recommendation,
+            audited_at = NOW();
+    ";
+    client.execute(
+        stmt,
+        &[
+            &trade_id,
+            &symbol,
+            &mint,
+            &realized_pnl_pct,
+            &realized_pnl_sol,
+            &exit_rule,
+            &hold_duration_secs,
+            &peak_mfe_pct,
+            &max_mae_pct,
+            &slippage_drift_pct,
+            &entry_cvd_ratio,
+            &entry_hawkes_eta,
+            &root_cause_category,
+            &counterfactual_recommendation,
+        ],
+    ).await
+}
+
+/// Queries all already audited trade IDs from PostgreSQL
+pub async fn fetch_audited_trade_ids(
+    client: &Client,
+) -> Result<std::collections::HashSet<i32>, Error> {
+    let stmt = "SELECT trade_id FROM trade_forensic_autopsies;";
+    let rows = client.query(stmt, &[]).await?;
+    let mut ids = std::collections::HashSet::new();
+    for row in rows {
+        let tid: i32 = row.get("trade_id");
+        ids.insert(tid);
+    }
+    Ok(ids)
+}
+
+/// Ensures the cold-path agent_audit_tasks table exists
+pub async fn init_agent_harness_tables(client: &Client) -> Result<(), Error> {
+    let stmt = "
+        CREATE TABLE IF NOT EXISTS agent_audit_tasks (
+            task_id VARCHAR(64) PRIMARY KEY,
+            task_type VARCHAR(64) NOT NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+            anomaly_summary TEXT NOT NULL,
+            counterfactual_delta_sol DOUBLE PRECISION NOT NULL,
+            proposed_diff TEXT NOT NULL,
+            guardrail_checks_passed BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            resolved_at TIMESTAMPTZ,
+            applied_at TIMESTAMPTZ
+        );
+        ALTER TABLE agent_audit_tasks ADD COLUMN IF NOT EXISTS applied_at TIMESTAMPTZ;
+    ";
+    client.execute(stmt, &[]).await?;
+    Ok(())
+}
+
+/// Inserts or updates an agent audit task into PostgreSQL
+pub async fn create_agent_task(
+    client: &Client,
+    task_id: &str,
+    task_type: &str,
+    anomaly_summary: &str,
+    delta_sol: f64,
+    proposed_diff: &str,
+    passed_checks: bool,
+) -> Result<u64, Error> {
+    let stmt = "
+        INSERT INTO agent_audit_tasks (
+            task_id, task_type, status, anomaly_summary,
+            counterfactual_delta_sol, proposed_diff, guardrail_checks_passed
+        ) VALUES ($1, $2, 'PENDING', $3, $4, $5, $6)
+        ON CONFLICT (task_id) DO UPDATE SET
+            task_type = EXCLUDED.task_type,
+            status = 'PENDING',
+            anomaly_summary = EXCLUDED.anomaly_summary,
+            counterfactual_delta_sol = EXCLUDED.counterfactual_delta_sol,
+            proposed_diff = EXCLUDED.proposed_diff,
+            guardrail_checks_passed = EXCLUDED.guardrail_checks_passed,
+            resolved_at = NULL;
+    ";
+    client.execute(
+        stmt,
+        &[&task_id, &task_type, &anomaly_summary, &delta_sol, &proposed_diff, &passed_checks],
+    ).await
+}
+
+/// Lists all pending agent audit tasks from PostgreSQL
+pub async fn list_pending_tasks(
+    client: &Client,
+) -> Result<Vec<(String, String, String, f64, String, bool)>, Error> {
+    let stmt = "
+        SELECT task_id, task_type, anomaly_summary, counterfactual_delta_sol, proposed_diff, guardrail_checks_passed
+        FROM agent_audit_tasks
+        WHERE status = 'PENDING'
+        ORDER BY created_at DESC;
+    ";
+    let rows = client.query(stmt, &[]).await?;
+    let mut tasks = Vec::new();
+    for row in rows {
+        tasks.push((
+            row.get("task_id"),
+            row.get("task_type"),
+            row.get("anomaly_summary"),
+            row.get("counterfactual_delta_sol"),
+            row.get("proposed_diff"),
+            row.get("guardrail_checks_passed"),
+        ));
+    }
+    Ok(tasks)
+}
+
+/// Resolves an agent audit task with a new status (e.g. 'APPLIED', 'REJECTED')
+pub async fn resolve_agent_task(
+    client: &Client,
+    task_id: &str,
+    new_status: &str,
+) -> Result<u64, Error> {
+    let stmt = "
+        UPDATE agent_audit_tasks
+        SET status = $2, resolved_at = NOW(), applied_at = NOW()
+        WHERE task_id = $1;
+    ";
+    client.execute(stmt, &[&task_id, &new_status]).await
+}
+
+/// Lists recent agent audit tasks (prioritizing PENDING/STAGED proposals)
+pub async fn list_recent_agent_tasks(
+    client: &Client,
+    limit: i64,
+) -> Result<Vec<(String, String, String, String, f64, String, bool)>, Error> {
+    let stmt = "
+        SELECT task_id, task_type, status, anomaly_summary, counterfactual_delta_sol, proposed_diff, guardrail_checks_passed
+        FROM agent_audit_tasks
+        ORDER BY CASE WHEN status IN ('PENDING', 'STAGED') THEN 0 ELSE 1 END, created_at DESC
+        LIMIT $1;
+    ";
+    let rows = client.query(stmt, &[&limit]).await?;
+    let mut tasks = Vec::new();
+    for row in rows {
+        tasks.push((
+            row.get("task_id"),
+            row.get("task_type"),
+            row.get("status"),
+            row.get("anomaly_summary"),
+            row.get("counterfactual_delta_sol"),
+            row.get("proposed_diff"),
+            row.get("guardrail_checks_passed"),
+        ));
+    }
+    Ok(tasks)
+}
+
+/// Fetches a single agent audit task by task_id
+pub async fn fetch_agent_task_by_id(
+    client: &Client,
+    task_id: &str,
+) -> Result<Option<(String, String, String, String, f64, String, bool)>, Error> {
+    let stmt = "
+        SELECT task_id, task_type, status, anomaly_summary, counterfactual_delta_sol, proposed_diff, guardrail_checks_passed
+        FROM agent_audit_tasks
+        WHERE task_id = $1;
+    ";
+    let rows = client.query(stmt, &[&task_id]).await?;
+    if let Some(row) = rows.into_iter().next() {
+        Ok(Some((
+            row.get("task_id"),
+            row.get("task_type"),
+            row.get("status"),
+            row.get("anomaly_summary"),
+            row.get("counterfactual_delta_sol"),
+            row.get("proposed_diff"),
+            row.get("guardrail_checks_passed"),
+        )))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Autopsy record row representation for cold-path agent harness
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct HarnessAutopsyRecord {
+    pub id: i32,
+    pub trade_id: i32,
+    pub symbol: String,
+    pub mint: String,
+    pub realized_pnl_pct: f64,
+    pub realized_pnl_sol: f64,
+    pub exit_rule: String,
+    pub hold_duration_secs: f64,
+    pub peak_mfe_pct: f64,
+    pub max_mae_pct: f64,
+    pub slippage_drift_pct: f64,
+    pub entry_cvd_ratio: Option<f64>,
+    pub entry_hawkes_eta: Option<f64>,
+    pub root_cause_category: String,
+    pub counterfactual_recommendation_raw: String,
+}
+
+/// Fetches recent trade autopsy records for harness analysis
+pub async fn fetch_harness_autopsies(
+    client: &Client,
+    limit: i64,
+) -> Result<Vec<HarnessAutopsyRecord>, Error> {
+    let stmt = "
+        SELECT 
+            id, trade_id, symbol, mint, realized_pnl_pct, realized_pnl_sol,
+            exit_rule, hold_duration_secs, peak_mfe_pct, max_mae_pct,
+            slippage_drift_pct, entry_cvd_ratio, entry_hawkes_eta,
+            root_cause_category, counterfactual_recommendation::text AS cf_raw
+        FROM trade_forensic_autopsies
+        ORDER BY id DESC
+        LIMIT $1;
+    ";
+    let rows = client.query(stmt, &[&limit]).await?;
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(HarnessAutopsyRecord {
+            id: row.get("id"),
+            trade_id: row.get("trade_id"),
+            symbol: row.get("symbol"),
+            mint: row.get("mint"),
+            realized_pnl_pct: row.get("realized_pnl_pct"),
+            realized_pnl_sol: row.get("realized_pnl_sol"),
+            exit_rule: row.get("exit_rule"),
+            hold_duration_secs: row.get("hold_duration_secs"),
+            peak_mfe_pct: row.get("peak_mfe_pct"),
+            max_mae_pct: row.get("max_mae_pct"),
+            slippage_drift_pct: row.get("slippage_drift_pct"),
+            entry_cvd_ratio: row.get("entry_cvd_ratio"),
+            entry_hawkes_eta: row.get("entry_hawkes_eta"),
+            root_cause_category: row.get("root_cause_category"),
+            counterfactual_recommendation_raw: row.get("cf_raw"),
+        });
+    }
+    Ok(records)
+}
+
+/// Fetches recent trade autopsy reports ordered by trade_id DESC
+pub async fn fetch_recent_autopsies(
+    client: &Client,
+    limit: i64,
+) -> Result<Vec<TradeAutopsyReport>, String> {
+    let stmt = "
+        SELECT 
+            trade_id, symbol, mint, realized_pnl_pct, realized_pnl_sol,
+            exit_rule, hold_duration_secs, peak_mfe_pct, max_mae_pct,
+            slippage_drift_pct, entry_cvd_ratio, entry_hawkes_eta,
+            root_cause_category, counterfactual_recommendation::text AS cf_raw
+        FROM trade_forensic_autopsies
+        ORDER BY trade_id DESC
+        LIMIT $1;
+    ";
+    let rows = client.query(stmt, &[&limit]).await.map_err(|e| e.to_string())?;
+    let mut reports = Vec::new();
+    for row in rows {
+        let root_cause_str: String = row.get("root_cause_category");
+        let root_cause_category = match root_cause_str.as_str() {
+            "RAPID_DRAIN_RUG" => RootCauseCategory::RapidDrainRug,
+            "EXCESSIVE_SLIPPAGE" => RootCauseCategory::ExcessiveSlippage,
+            "STAGNATION_DECAY" => RootCauseCategory::StagnationDecay,
+            "ORGANIC_STOP" => RootCauseCategory::OrganicStop,
+            _ => RootCauseCategory::NormalExit,
+        };
+        let cf_raw: String = row.get("cf_raw");
+        let counterfactual: CounterfactualResult = serde_json::from_str(&cf_raw).unwrap_or_else(|_| CounterfactualResult {
+            would_avoid_trade: false,
+            avoided_loss_sol: 0.0,
+            avoided_loss_pct: 0.0,
+            blocking_gates: Vec::new(),
+            recommendation: String::new(),
+        });
+
+        reports.push(TradeAutopsyReport {
+            trade_id: row.get("trade_id"),
+            symbol: row.get("symbol"),
+            mint: row.get("mint"),
+            realized_pnl_pct: row.get("realized_pnl_pct"),
+            realized_pnl_sol: row.get("realized_pnl_sol"),
+            exit_rule: row.get("exit_rule"),
+            hold_duration_secs: row.get("hold_duration_secs"),
+            peak_mfe_pct: row.get("peak_mfe_pct"),
+            max_mae_pct: row.get("max_mae_pct"),
+            slippage_drift_pct: row.get("slippage_drift_pct"),
+            entry_cvd_ratio: row.get("entry_cvd_ratio"),
+            entry_hawkes_eta: row.get("entry_hawkes_eta"),
+            root_cause_category,
+            counterfactual,
+        });
+    }
+    Ok(reports)
+}
+
+/// Records or updates caller channel activity upon receiving a social signal
+pub async fn record_caller_signal(client: &Client, channel_id: i64, channel_title: &str) {
+    let stmt = "
+        INSERT INTO caller_channels (channel_id, channel_title, total_calls, last_call_at)
+        VALUES ($1, $2, 1, NOW())
+        ON CONFLICT (channel_id) DO UPDATE SET
+            channel_title = EXCLUDED.channel_title,
+            total_calls = caller_channels.total_calls + 1,
+            last_call_at = NOW()
+    ";
+    let _ = client.execute(stmt, &[&channel_id, &channel_title]).await;
+}
+
+/// Fetches caller reputation score and blacklist flag
+pub async fn fetch_caller_reputation(client: &Client, channel_id: i64) -> Option<(f64, bool)> {
+    let stmt = "SELECT reputation_score::float8, is_blacklisted FROM caller_channels WHERE channel_id = $1";
+    if let Ok(rows) = client.query(stmt, &[&channel_id]).await {
+        if let Some(row) = rows.first() {
+            let score: f64 = row.get(0);
+            let blacklisted: bool = row.get(1);
+            return Some((score, blacklisted));
+        }
+    }
+    None
+}
+
+/// Fetches caller reputation score, blacklist flag, and total calls count
+pub async fn fetch_caller_reputation_and_calls(client: &Client, channel_id: i64) -> Option<(f64, bool, u64)> {
+    let stmt = "SELECT reputation_score::float8, is_blacklisted, total_calls FROM caller_channels WHERE channel_id = $1";
+    if let Ok(rows) = client.query(stmt, &[&channel_id]).await {
+        if let Some(row) = rows.first() {
+            let score: f64 = row.get(0);
+            let blacklisted: bool = row.get(1);
+            let total_calls: i32 = row.get(2);
+            return Some((score, blacklisted, total_calls.max(0) as u64));
+        }
+    }
+    None
+}
+
+/// Updates caller channel performance upon trade settlement
+pub async fn record_caller_settled_trade(client: &Client, channel_id: i64, outcome_str: &str, pnl_sol: f64) {
+    let (is_win, is_scratch, is_loss) = match outcome_str {
+        "WIN" => (1i32, 0i32, 0i32),
+        "SCRATCH" => (0i32, 1i32, 0i32),
+        _ => (0i32, 0i32, 1i32),
+    };
+    let stmt = "
+        UPDATE caller_channels
+        SET 
+            wins = wins + $2,
+            scratches = scratches + $3,
+            losses = losses + $4,
+            net_pnl_sol = net_pnl_sol + $5::numeric,
+            reputation_score = GREATEST(0.0, LEAST(100.0, 50.0 + ((wins + $2) * 5.0) - ((losses + $4) * 7.0) + ((net_pnl_sol + $5::numeric) * 100.0))),
+            is_blacklisted = CASE WHEN (50.0 + ((wins + $2) * 5.0) - ((losses + $4) * 7.0) + ((net_pnl_sol + $5::numeric) * 100.0)) < 25.0 THEN TRUE ELSE is_blacklisted END
+        WHERE channel_id = $1
+    ";
+    let _ = client.execute(stmt, &[&channel_id, &is_win, &is_scratch, &is_loss, &pnl_sol]).await;
+}
+
+

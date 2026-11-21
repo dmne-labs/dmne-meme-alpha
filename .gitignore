@@ -1,0 +1,13 @@
+.env
+*.pem
+*.key
+*.json
+!Cargo.json
+config/config.toml
+data/
+logs/
+target/
+__pycache__/
+.venv/
+venv*/
+node_modules/
