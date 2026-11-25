@@ -1,18 +1,26 @@
 # DMNE Meme Alpha (Open-Core)
 
-Deterministic Solana on-chain microstructure gating, Hawkes point-process wash-trading detection, funder-graph sybil filtering, volatility-scaled exit arbitration, and Jito execution engine by **DMNE Labs**.
+Deterministic Solana on-chain microstructure gating, Hawkes point-process
+wash-trading detection, funder-graph sybil filtering, volatility-scaled
+exit arbitration, and signed Jupiter V6 / Jito execution engine by
+**DMNE Labs**.
 
 ## Official Links
 
-- **DMNE Labs:** https://dmnelabs.com
+- **DMNE Labs:** https://www.dmnelabs.com
 - **DMNE Meme:** https://dmne-meme.com
-- **DMNE Quant:** https://dmne-quant.com
-- **DMNE Institutional:** https://dmne-institutional.com
 - **Commercial & Enterprise Licensing:** `licensing@dmnelabs.com`
 
 ## Open-Core Scope & Calibration
 
-This public release provides the deterministic Rust execution engine, fail-closed microstructure guards, and forensic telemetry pipeline configured with conservative baseline thresholds. Proprietary parameter calibrations, empirical tick-level datasets, and private signal ingestion pipelines remain exclusive to DMNE Labs' production deployments and licensed partner environments.
+This public release (`v2.2.9`) provides the deterministic Rust execution
+engine—including signed Ed25519 `VersionedTransaction` swaps, concurrent
+Jito bundle and RPC dispatch, fail-closed signature confirmation, atomic
+SPL token balance verification, microstructure guards, and forensic
+telemetry pipeline—configured with conservative baseline thresholds.
+Proprietary parameter calibrations, empirical tick-level datasets, and
+private signal ingestion pipelines remain exclusive to DMNE Labs'
+production deployments and licensed partner environments.
 
 ## Quick Start
 
@@ -21,7 +29,8 @@ This public release provides the deterministic Rust execution engine, fail-close
    cp config/config.example.toml config/config.toml
    cp .env.example .env
    ```
-2. Calibrate thresholds in `config/config.toml` on your own out-of-sample data and configure your RPC endpoints in `.env`.
+2. Calibrate thresholds in `config/config.toml` on your own
+   out-of-sample data and configure your RPC endpoints in `.env`.
 3. Run the unit test suite and build the release binary:
    ```bash
    cargo test --all
