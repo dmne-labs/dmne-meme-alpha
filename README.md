@@ -7,8 +7,9 @@ exit arbitration, and signed Jupiter V6 / Jito execution engine by
 
 ## Official Links
 
-- **DMNE Labs:** https://www.dmnelabs.com
+- **DMNE Labs:** https://dmnelabs.com
 - **DMNE Meme:** https://dmne-meme.com
+- **Research Brief 002 (On-Chain Execution Drag):** https://dmnelabs.com/research/brief-002.html
 - **Commercial & Enterprise Licensing:** `licensing@dmnelabs.com`
 
 ## Open-Core Scope & Calibration
